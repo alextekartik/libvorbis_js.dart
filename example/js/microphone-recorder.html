@@ -1,0 +1,207 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+
+    <title>Microphone Recorder</title>
+
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.2/css/bootstrap.min.css" rel="stylesheet">
+
+    <script src="packages/tekartik_libvorbis_js/js/libvorbis.oggvbr.asyncencoder.min.js" async></script>
+
+    <style>
+        h1 > small {
+            display: block;
+        }
+
+        @media (min-width: 992px) {
+            .wrapper {
+                max-width: 860px;
+            }
+
+            h1 > small {
+                display: inline;
+            }
+        }
+    </style>
+
+    <script>
+        'use strict';
+
+        function downloadBlob(url) {
+            return new Promise(function (resolve, reject) {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.responseType = 'blob';
+
+                xhr.onload = function () {
+                    resolve(xhr.response)
+                };
+
+                xhr.onerror = reject;
+
+                xhr.send();
+            });
+        }
+
+        function getAudioStream() {
+            var getUserMedia  =  navigator.getUserMedia
+                    || navigator.webkitGetUserMedia
+                    || navigator.mozGetUserMedia
+                    || navigator.msGetUserMedia;
+
+            return new Promise(function (resolve, reject) {
+                getUserMedia.call(navigator, { audio: true }, function (stream) {
+                    resolve(stream);
+                }, function (err) {
+                    reject(err);
+                });
+            });
+        }
+
+        function beginOggVorbisEncoding(stream, quality, onStarted) {
+            var bufferSize = 4 * 1024;
+
+            var audioContext = new AudioContext();
+            var audioSourceNode = audioContext.createMediaStreamSource(stream);
+            var scriptProcessorNode = audioContext.createScriptProcessor(bufferSize);
+
+            var channels = 2;
+            var sampleRate = audioContext.sampleRate;
+
+            var options = {
+                workerURL: 'packages/tekartik_libvorbis_js/js/libvorbis.oggvbr.asyncencoder.worker.min.js',
+                moduleURL: 'libvorbis.asmjs.min.js',
+                encoderOptions: {
+                    channels: channels,
+                    sampleRate: sampleRate,
+                    quality: quality
+                }
+            };
+
+            var chunks = [];
+            var onFinishedCallback = null;
+
+            function onData(data) {
+                chunks.push(data);
+            }
+
+            function onFinished() {
+                var blob = new Blob(chunks, { type: 'audio/ogg' });
+                onFinishedCallback(blob);
+            }
+
+            libvorbis.OggVbrAsyncEncoder.create(options, onData, onFinished).then(function (encoder) {
+                scriptProcessorNode.onaudioprocess = function (ev) {
+                    var inputBuffer = ev.inputBuffer;
+                    var samples = inputBuffer.length;
+
+                    var ch0 = inputBuffer.getChannelData(0);
+                    var ch1 = inputBuffer.getChannelData(1);
+
+                    // script processor reuses buffers; we need to make copies
+                    ch0 = new Float32Array(ch0);
+                    ch1 = new Float32Array(ch1);
+
+                    var channelData = [ch0, ch1];
+
+                    encoder.encode(channelData);
+                };
+
+                audioSourceNode.connect(scriptProcessorNode);
+                scriptProcessorNode.connect(audioContext.destination);
+
+                function stopper(onFinished) {
+                    onFinishedCallback = onFinished;
+
+                    audioSourceNode.disconnect(scriptProcessorNode);
+                    scriptProcessorNode.disconnect(audioContext.destination);
+
+                    encoder.finish();
+                }
+
+                onStarted(encoder, stopper);
+            });
+        }
+
+        window.addEventListener('load', function () {
+            var record = document.querySelector('#record');
+            var stop = document.querySelector('#stop');
+
+            var output = document.querySelector('#output');
+
+            var template = document.querySelector('#recording-template');
+
+            var capture = null;
+
+            record.addEventListener('click', function () {
+                getAudioStream().then(function (stream) {
+
+                    beginOggVorbisEncoding(stream, 0.8, function onStarted(encoder, stopper) {
+
+                        stop.addEventListener('click', function onStopClicked() {
+                            stop.removeEventListener('click', onStopClicked);
+
+                            stopper(function (blob) {
+                                var url = URL.createObjectURL(blob);
+
+                                downloadBlob(url).then(function (blob) {
+                                    var url = URL.createObjectURL(blob);
+                                    var recording = document.importNode(template.content, true);
+
+                                    var audio = recording.querySelector('audio');
+                                    audio.src = url;
+
+                                    var link = recording.querySelector('a[download]');
+                                    link.href = url;
+                                    link.download = "recording.ogg";
+
+                                    var size = recording.querySelector('[data-key=size] ~ .value');
+                                    size.innerText = blob.size;
+
+                                    var reference = output.querySelector('.recording:first-child');
+
+                                    output.insertBefore(recording, reference);
+                                });
+                            });
+                            stream.stop();
+                        });
+                    });
+                });
+            });
+
+        });
+
+    </script>
+</head>
+<body>
+<div class="wrapper container-fluid">
+    <h1>libvorbis.js <small>Microphone Recorder</small></h1>
+
+    <h3 class="page-header">Controls</h3>
+
+    <section>
+        <button id="record" class="btn btn-success">Record</button>
+        <button id="stop" class="btn btn-danger">Stop</button>
+    </section>
+
+    <h3 class="page-header">Recordings</h3>
+
+    <section id="output">
+
+    </section>
+</div>
+
+<template id="recording-template">
+    <article class="recording panel panel-default">
+        <div class="panel-body">
+            <p><strong data-key="size">Size</strong> <span class="value"></span> <em>Bytes</em></p>
+            <p><audio controls></audio></p>
+            <p><a href="" download="">Download</a></p>
+        </div>
+    </article>
+</template>
+</body>
+</html>
